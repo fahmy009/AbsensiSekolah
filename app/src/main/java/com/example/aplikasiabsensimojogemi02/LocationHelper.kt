@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationManager
+import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.google.android.gms.location.LocationServices
@@ -17,6 +18,9 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.TimeUnit
 import kotlin.math.*
 
+/**
+ * Helper untuk mengelola pembacaan GPS dan keamanan lokasi (Geofencing & Anti-Fake GPS).
+ */
 class LocationHelper(private val context: Context) {
     private val fusedLocationClient = LocationServices.getFusedLocationProviderClient(context)
 
@@ -29,8 +33,20 @@ class LocationHelper(private val context: Context) {
         val isGpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
         val isNetworkEnabled = locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
         
-        Log.d("LocationHelper", "Permission: $hasPermission, GPS: $isGpsEnabled, Network: $isNetworkEnabled")
         return hasPermission && (isGpsEnabled || isNetworkEnabled)
+    }
+
+    /**
+     * Mendeteksi apakah lokasi berasal dari aplikasi Mock/Fake GPS.
+     * Fitur keamanan krusial untuk mencegah kecurangan siswa.
+     */
+    fun isMockLocation(location: Location): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            location.isMock
+        } else {
+            @Suppress("DEPRECATION")
+            location.isFromMockProvider
+        }
     }
 
     /**
@@ -38,64 +54,51 @@ class LocationHelper(private val context: Context) {
      */
     @SuppressLint("MissingPermission")
     suspend fun getCurrentLocation(): Location? = withContext(Dispatchers.IO) {
-        if (!isLocationEnabled()) {
-            Log.e("LocationHelper", "Location disabled or permission missing")
-            return@withContext null
-        }
+        if (!isLocationEnabled()) return@withContext null
 
         try {
-            // 1. Coba ambil lokasi terakhir (lastLocation) - sangat cepat
+            // 1. Coba ambil lokasi terakhir (lastLocation)
             val lastLocation = Tasks.await(fusedLocationClient.lastLocation, 5, TimeUnit.SECONDS)
             if (lastLocation != null && (System.currentTimeMillis() - lastLocation.time) < 30000) {
-                Log.d("LocationHelper", "Using fresh lastLocation")
                 return@withContext lastLocation
             }
 
-            // 2. Jika lastLocation null atau usang, paksa ambil lokasi baru
-            Log.d("LocationHelper", "Requesting fresh location...")
+            // 2. Paksa ambil lokasi baru yang akurat
             val cts = CancellationTokenSource()
             val freshLocation = Tasks.await(
                 fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, cts.token),
                 15, TimeUnit.SECONDS
             )
             
-            if (freshLocation != null) {
-                Log.d("LocationHelper", "Fresh location acquired: ${freshLocation.latitude}, ${freshLocation.longitude}")
-                return@withContext freshLocation
-            }
-
-            Log.w("LocationHelper", "Failed to get fresh location, falling back to lastLocation")
-            return@withContext lastLocation
+            return@withContext freshLocation ?: lastLocation
         } catch (e: Exception) {
-            Log.e("LocationHelper", "Error getting location: ${e.message}")
-            e.printStackTrace()
+            Log.e("LocationHelper", "Error: ${e.message}")
             null
         }
     }
 
     /**
-     * Mengecek apakah lokasi perangkat berada di dalam radius sekolah.
+     * Mengecek apakah lokasi berada di radius sekolah DAN bukan lokasi palsu.
+     * Returns: Triple(isWithinRadius, distance, isFakeLocation)
      */
     @SuppressLint("MissingPermission")
-    suspend fun isWithinRadius(targetLat: Double, targetLng: Double, radiusInMeters: Double): Pair<Boolean, Double> {
+    suspend fun validateLocation(targetLat: Double, targetLng: Double, radiusInMeters: Double): Triple<Boolean, Double, Boolean> {
         return try {
             val location = getCurrentLocation()
             if (location != null) {
+                val isFake = isMockLocation(location)
                 val distance = calculateDistance(location.latitude, location.longitude, targetLat, targetLng)
-                Log.d("LocationHelper", "Distance to school: $distance meters, Radius: $radiusInMeters")
-                Pair(distance <= radiusInMeters, distance)
+                Triple(distance <= radiusInMeters, distance, isFake)
             } else {
-                Log.e("LocationHelper", "isWithinRadius: Location is NULL")
-                Pair(false, -1.0)
+                Triple(false, -1.0, false)
             }
         } catch (e: Exception) {
-            Log.e("LocationHelper", "isWithinRadius Error: ${e.message}")
-            Pair(false, -2.0)
+            Triple(false, -2.0, false)
         }
     }
 
     /**
-     * Algoritma Haversine untuk menghitung jarak antara dua titik koordinat di Bumi.
+     * Algoritma Haversine untuk menghitung jarak antara dua titik koordinat.
      */
     private fun calculateDistance(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
         val r = 6371e3 // Jari-jari bumi dalam meter

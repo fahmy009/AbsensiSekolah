@@ -82,6 +82,9 @@ import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import android.graphics.Color as AndroidColor
 
+import androidx.biometric.BiometricPrompt
+import androidx.fragment.app.FragmentActivity
+
 /**
  * Data class untuk merepresentasikan informasi Siswa dari database.
  */
@@ -103,11 +106,178 @@ val MojoGreen = Color(0xFF2E7D32)
 val MojoRed = Color(0xFFC62828)
 val MojoBackground = Color(0xFFF8F9FA)
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     // Inisialisasi HTTP Client satu kali untuk seluruh activity
     private val client = OkHttpClient()
     private lateinit var db: AppDatabase
     private lateinit var locationHelper: LocationHelper
+    private var globalHolidayMessage by mutableStateOf<String?>(null)
+    private var isAlarmPermissionRequestInFlight = false
+
+    /**
+     * Mencari objek jadwal dalam JSON response.
+     */
+    private fun findJadwalInJson(obj: JSONObject?): JSONObject? {
+        if (obj == null) return null
+        if (obj.has("jadwal_harian")) return obj
+        val keys = obj.keys()
+        while (keys.hasNext()) {
+            val v = obj.opt(keys.next())
+            if (v is JSONObject) {
+                val found = findJadwalInJson(v)
+                if (found != null) return found
+            }
+        }
+        return null
+    }
+
+    /**
+     * Fungsi untuk mengecek apakah hari ini libur (Rutin/Khusus) dari backend.
+     */
+    private fun checkHolidays(session: SessionManager, onResult: (String?) -> Unit = {}) {
+        globalHolidayMessage = null // Reset status libur setiap kali pengecekan dimulai
+        // Cek konfigurasi jadwal harian dan geofence
+        apiCall(session.getBackendUrl(), JSONObject().apply { put("action", "get_config"); put("token", session.getToken()) }) { s, res ->
+            if (s) {
+                scheduleAttendanceNotifications(res)
+                
+                // Update Geofence dari Database Server agar tidak bisa dimanipulasi di sisi HP
+                val lat = res.optDouble("school_lat", session.getSchoolLat())
+                val lng = res.optDouble("school_lng", session.getSchoolLng())
+                val radius = res.optDouble("school_radius", session.getSchoolRadius())
+                session.saveConfig(session.getSchoolName(), session.getBackendUrl(), session.getLogoPath(), session.getJadwal(), lat, lng, radius)
+
+                val targetObj = findJadwalInJson(res)
+                val rawJadwal = targetObj?.opt("jadwal_harian")
+                val jadwal = when (rawJadwal) {
+                    is String -> if (rawJadwal.isNotEmpty() && rawJadwal != "null") try { JSONObject(rawJadwal) } catch(e: Exception) { JSONObject() } else JSONObject()
+                    is JSONObject -> rawJadwal
+                    else -> JSONObject()
+                }
+                
+                val now = Calendar.getInstance()
+                val gasDayIdx = when(now.get(Calendar.DAY_OF_WEEK)) {
+                    Calendar.MONDAY -> "1"; Calendar.TUESDAY -> "2"; Calendar.WEDNESDAY -> "3"; Calendar.THURSDAY -> "4"
+                    Calendar.FRIDAY -> "5"; Calendar.SATURDAY -> "6"; Calendar.SUNDAY -> "7"; else -> "1"
+                }
+
+                val todaySched = jadwal.optJSONObject(gasDayIdx)
+                if (todaySched?.optBoolean("libur", false) == true) {
+                    val names = mapOf("1" to "Senin", "2" to "Selasa", "3" to "Rabu", "4" to "Kamis", "5" to "Jumat", "6" to "Sabtu", "7" to "Minggu")
+                    val msg = "Libur Rutin (Hari ${names[gasDayIdx]})"
+                    if (globalHolidayMessage != msg) {
+                        showSystemNotification("Hari Libur", "Hari ini adalah $msg. Absensi ditiadakan.")
+                    }
+                    globalHolidayMessage = msg
+                    onResult(msg)
+                }
+            }
+        }
+        // Cek daftar hari libur khusus (tanggal merah kalender)
+        apiCall(session.getBackendUrl(), JSONObject().apply { put("action", "get_holidays"); put("token", session.getToken()) }) { s, res ->
+            if (s) {
+                fun findArray(obj: JSONObject?): org.json.JSONArray? {
+                    if (obj == null) return null
+                    val keys = obj.keys()
+                    while (keys.hasNext()) {
+                        val k = keys.next()
+                        val v = obj.opt(k)
+                        if (v is org.json.JSONArray) return v
+                        if (v is JSONObject) {
+                            val found = findArray(v)
+                            if (found != null) return found
+                        }
+                    }
+                    return null
+                }
+                
+                val arr = findArray(res) ?: org.json.JSONArray()
+                val now = Calendar.getInstance()
+                val d = now.get(Calendar.DAY_OF_MONTH)
+                val m = now.get(Calendar.MONTH) + 1
+                val y = now.get(Calendar.YEAR)
+                
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    val tglRaw = obj.optString("tanggal", "").replace("/", "-")
+                    val parts = tglRaw.split("-")
+                    if (parts.size == 3) {
+                        try {
+                            val isMatch = if (parts[0].length == 4) { // Format yyyy-MM-dd
+                                parts[0].toInt() == y && parts[1].toInt() == m && parts[2].toInt() == d
+                            } else { // Format dd-MM-yyyy
+                                parts[0].toInt() == d && parts[1].toInt() == m && parts[2].toInt() == y
+                            }
+                            
+                            if (isMatch) {
+                                val msg = "Hari Libur (${obj.optString("keterangan", "Tanpa Keterangan")})"
+                                if (globalHolidayMessage != msg) {
+                                    showSystemNotification("Hari Libur Sekolah", msg)
+                                }
+                                globalHolidayMessage = msg
+                                onResult(msg)
+                                break 
+                            }
+                        } catch (e: Exception) {}
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Menampilkan notifikasi sistem di status bar.
+     */
+    private fun showSystemNotification(title: String, message: String) {
+        val channelId = "general_notifications"
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = android.app.NotificationChannel(
+                channelId,
+                "Notifikasi Umum",
+                android.app.NotificationManager.IMPORTANCE_DEFAULT
+            )
+            notificationManager.createNotificationChannel(channel)
+        }
+
+        val intent = Intent(this, MainActivity::class.java)
+        val pendingIntent = PendingIntent.getActivity(
+            this, 0, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = androidx.core.app.NotificationCompat.Builder(this, channelId)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(title)
+            .setContentText(message)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .build()
+
+        notificationManager.notify(System.currentTimeMillis().toInt(), notification)
+    }
+
+    /**
+     * Menampilkan dialog otentikasi biometrik (Sidik Jari/Wajah).
+     */
+    private fun showBiometricPrompt(onSuccess: () -> Unit) {
+        val executor = ContextCompat.getMainExecutor(this)
+        val biometricPrompt = BiometricPrompt(this, executor, object : BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                super.onAuthenticationSucceeded(result)
+                runOnUiThread { onSuccess() }
+            }
+        })
+
+        val promptInfo = BiometricPrompt.PromptInfo.Builder()
+            .setTitle("Login Biometrik")
+            .setSubtitle("Gunakan sidik jari atau wajah untuk masuk")
+            .setNegativeButtonText("Batal")
+            .build()
+
+        biometricPrompt.authenticate(promptInfo)
+    }
 
     /**
      * Fungsi entry point saat Activity dibuat.
@@ -123,24 +293,35 @@ class MainActivity : ComponentActivity() {
             var page by remember { mutableStateOf("SPLASH") }
             val context = LocalContext.current
             
-            // Cek status izin kamera saat aplikasi dijalankan
-            var hasCam by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
-            
-            // Launcher untuk meminta izin kamera secara runtime
-            val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { hasCam = it }
+            // Launcher terpadu untuk semua izin di awal (Lokasi, Kamera, Notifikasi)
+            val allPermissionsLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
+                val allGranted = results.values.all { it }
+                if (!allGranted) {
+                    Toast.makeText(context, "Beberapa izin ditolak. Aplikasi mungkin tidak bekerja maksimal.", Toast.LENGTH_LONG).show()
+                }
+            }
 
-            // Launcher untuk izin Notifikasi (Android 13+)
-            val notifLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { _ -> }
+            val requestCameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { _ -> }
 
-            val locLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ -> }
-            
             // Logika transisi dari Splash ke halaman tujuan (Login atau Dashboard)
             LaunchedEffect(Unit) { 
+                // Kumpulkan daftar izin yang diperlukan
+                val permissions = mutableListOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                    Manifest.permission.CAMERA
+                )
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    permissions.add(Manifest.permission.POST_NOTIFICATIONS)
                 }
-                locLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
-                delay(800) // Delay splash screen
+
+                // Minta semua izin sekaligus
+                allPermissionsLauncher.launch(permissions.toTypedArray())
+                
+                // SINKRONISASI DATA UTAMA SAAT STARTUP (Agar peta & jadwal langsung siap)
+                checkHolidays(session)
+
+                delay(1200) // Delay splash screen
                 page = if (session.getToken().isNullOrEmpty()) "LOGIN" else "DASHBOARD" 
             }
 
@@ -163,7 +344,10 @@ class MainActivity : ComponentActivity() {
                         when (targetPage) {
                             "SPLASH" -> SplashScreen(session)
                             "LOGIN" -> LoginScreen(session) { page = "DASHBOARD" }
-                            "DASHBOARD" -> DashboardScreen(session, hasCam, { launcher.launch(Manifest.permission.CAMERA) }, { page = "LOGIN" })
+                            "DASHBOARD" -> {
+                                val hasCameraPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                                DashboardScreen(session, hasCameraPermission, { requestCameraLauncher.launch(Manifest.permission.CAMERA) }, { page = "LOGIN" })
+                            }
                         }
                     }
                 }
@@ -209,6 +393,9 @@ class MainActivity : ComponentActivity() {
         var msg by remember { mutableStateOf("") }
         var showConf by remember { mutableStateOf(false) }
         var showAbout by remember { mutableStateOf(false) }
+        
+        // Deteksi apakah keyboard sedang muncul
+        val isKeyboardVisible = WindowInsets.ime.asPaddingValues().calculateBottomPadding() > 0.dp
 
         Box(Modifier.fillMaxSize().imePadding()) {
             Row(Modifier.align(Alignment.TopEnd).padding(16.dp)) {
@@ -289,6 +476,7 @@ class MainActivity : ComponentActivity() {
                                         res.optString("username", u),
                                         "" 
                                     )
+                                    session.setBiometricEnabled(true)
                                     onSuccess()
                                 } else {
                                     msg = res.optString("message", "Gagal Login (Cek Kembali Data Anda)")
@@ -302,6 +490,30 @@ class MainActivity : ComponentActivity() {
                         Icon(Icons.AutoMirrored.Filled.Login, null)
                         Spacer(Modifier.width(8.dp))
                         Text("MASUK", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    }
+
+                    // Tambahan Tombol Biometrik (Muncul jika sudah pernah login sebelumnya)
+                    if (session.isBiometricEnabled() && !isKeyboardVisible) {
+                        Spacer(Modifier.height(40.dp))
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            IconButton(
+                                onClick = { 
+                                    showBiometricPrompt {
+                                        if (session.restoreFullSessionFromSecure()) {
+                                            onSuccess()
+                                        } else {
+                                            msg = "Sesi biometrik kadaluarsa, silakan login manual."
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.size(72.dp).background(MojoBlue.copy(0.1f), CircleShape)
+                            ) {
+                                Icon(Icons.Default.Fingerprint, "Biometric", tint = MojoBlue, modifier = Modifier.size(40.dp))
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            Text("Masuk Cepat", fontSize = 14.sp, color = MojoBlue, fontWeight = FontWeight.Bold)
+                        }
+                        Spacer(Modifier.height(40.dp))
                     }
                 }
                 
@@ -325,14 +537,16 @@ class MainActivity : ComponentActivity() {
                 }
             }
             
-            // Info Pengembang di bagian bawah layar
-            Text(
-                "© Muhammad Fahmy 2026", 
-                fontSize = 11.sp, 
-                color = Color.Gray,
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp),
-                fontWeight = FontWeight.Medium
-            )
+            // Info Pengembang di bagian bawah layar (Sembunyikan jika keyboard muncul agar estetik)
+            if (!isKeyboardVisible) {
+                Text(
+                    "© Muhammad Fahmy 2026", 
+                    fontSize = 11.sp, 
+                    color = Color.Gray,
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp),
+                    fontWeight = FontWeight.Medium
+                )
+            }
         }
         // Menampilkan dialog konfigurasi URL jika tombol gear diklik
         if (showConf) AppConfigDialog(session) { showConf = false }
@@ -501,7 +715,6 @@ class MainActivity : ComponentActivity() {
         var scanMessage by remember { mutableStateOf("") }
         var scanSuccess by remember { mutableStateOf<Boolean?>(null) }
         
-        var holidayMessage by remember { mutableStateOf<String?>(null) }
         var loadingNisn by remember { mutableStateOf<String?>(null) }
         
         val isAdmin = session.getRole()?.lowercase() == "admin"
@@ -520,104 +733,8 @@ class MainActivity : ComponentActivity() {
         var searchQuery by remember { mutableStateOf("") }
         var showProfile by remember { mutableStateOf(false) }
 
-        /**
-         * Fungsi untuk mengecek apakah hari ini libur (Rutin/Khusus) dari backend.
-         * Juga memperbarui konfigurasi Geofence dari server untuk keamanan.
-         */
-        fun checkHolidays() {
-            holidayMessage = null
-            // Cek konfigurasi jadwal harian dan geofence
-            apiCall(session.getBackendUrl(), JSONObject().apply { put("action", "get_config"); put("token", session.getToken()) }) { s, res ->
-                if (s) {
-                    scheduleAttendanceNotifications(res)
-                    
-                    // Update Geofence dari Database Server agar tidak bisa dimanipulasi di sisi HP
-                    val lat = res.optDouble("school_lat", session.getSchoolLat())
-                    val lng = res.optDouble("school_lng", session.getSchoolLng())
-                    val radius = res.optDouble("school_radius", session.getSchoolRadius())
-                    session.saveConfig(session.getSchoolName(), session.getBackendUrl(), session.getLogoPath(), session.getJadwal(), lat, lng, radius)
-
-                    fun findJadwal(obj: JSONObject?): JSONObject? {
-                        if (obj == null) return null
-                        if (obj.has("jadwal_harian")) return obj
-                        val keys = obj.keys()
-                        while (keys.hasNext()) {
-                            val v = obj.opt(keys.next())
-                            if (v is JSONObject) {
-                                val found = findJadwal(v)
-                                if (found != null) return found
-                            }
-                        }
-                        return null
-                    }
-                    
-                    val targetObj = findJadwal(res)
-                    val rawJadwal = targetObj?.opt("jadwal_harian")
-                    val jadwal = when (rawJadwal) {
-                        is String -> if (rawJadwal.isNotEmpty() && rawJadwal != "null") try { JSONObject(rawJadwal) } catch(e: Exception) { JSONObject() } else JSONObject()
-                        is JSONObject -> rawJadwal
-                        else -> JSONObject()
-                    }
-                    
-                    val now = Calendar.getInstance()
-                    val gasDayIdx = when(now.get(Calendar.DAY_OF_WEEK)) {
-                        Calendar.MONDAY -> "1"; Calendar.TUESDAY -> "2"; Calendar.WEDNESDAY -> "3"; Calendar.THURSDAY -> "4"
-                        Calendar.FRIDAY -> "5"; Calendar.SATURDAY -> "6"; Calendar.SUNDAY -> "7"; else -> "1"
-                    }
-
-                    val todaySched = jadwal.optJSONObject(gasDayIdx)
-                    if (todaySched?.optBoolean("libur", false) == true) {
-                        val names = mapOf("1" to "Senin", "2" to "Selasa", "3" to "Rabu", "4" to "Kamis", "5" to "Jumat", "6" to "Sabtu", "7" to "Minggu")
-                        holidayMessage = "Libur Rutin (Hari ${names[gasDayIdx]})"
-                    }
-                }
-            }
-            // Cek daftar hari libur khusus (tanggal merah kalender)
-            apiCall(session.getBackendUrl(), JSONObject().apply { put("action", "get_holidays"); put("token", session.getToken()) }) { s, res ->
-                if (s) {
-                    fun findArray(obj: JSONObject?): org.json.JSONArray? {
-                        if (obj == null) return null
-                        val keys = obj.keys()
-                        while (keys.hasNext()) {
-                            val k = keys.next()
-                            val v = obj.opt(k)
-                            if (v is org.json.JSONArray) return v
-                            if (v is JSONObject) {
-                                val found = findArray(v)
-                                if (found != null) return found
-                            }
-                        }
-                        return null
-                    }
-                    
-                    val arr = findArray(res) ?: org.json.JSONArray()
-                    val now = Calendar.getInstance()
-                    val d = now.get(Calendar.DAY_OF_MONTH)
-                    val m = now.get(Calendar.MONTH) + 1
-                    val y = now.get(Calendar.YEAR)
-                    
-                    for (i in 0 until arr.length()) {
-                        val obj = arr.getJSONObject(i)
-                        val tglRaw = obj.optString("tanggal", "").replace("/", "-")
-                        val parts = tglRaw.split("-")
-                        if (parts.size == 3) {
-                            try {
-                                val isMatch = if (parts[0].length == 4) { // Format yyyy-MM-dd
-                                    parts[0].toInt() == y && parts[1].toInt() == m && parts[2].toInt() == d
-                                } else { // Format dd-MM-yyyy
-                                    parts[0].toInt() == d && parts[1].toInt() == m && parts[2].toInt() == y
-                                }
-                                
-                                if (isMatch) {
-                                    holidayMessage = "Hari Libur (${obj.optString("keterangan", "Tanpa Keterangan")})"
-                                    break 
-                                }
-                            } catch (e: Exception) {}
-                        }
-                    }
-                }
-            }
-        }
+        // Jalankan pengecekan libur saat layar dibuka
+        LaunchedEffect(Unit) { checkHolidays(session) }
 
         // State untuk feedback sinkronisasi (Online/Offline)
         var syncProgress by remember { mutableStateOf(0f) }
@@ -639,7 +756,7 @@ class MainActivity : ComponentActivity() {
             syncStatusMsg = "Memulai sinkronisasi..."
             
             // Cek hari libur saat melakukan sinkronisasi
-            checkHolidays()
+            checkHolidays(session)
             
             // Baca dulu dari database lokal agar UI tetap responsif (offline first)
             lifecycleScope.launch {
@@ -725,14 +842,14 @@ class MainActivity : ComponentActivity() {
         // Loop untuk update jarak secara real-time
         LaunchedEffect(Unit) {
             while(true) {
-                val (_, dist) = locationHelper.isWithinRadius(session.getSchoolLat(), session.getSchoolLng(), session.getSchoolRadius())
+                val (_, dist) = locationHelper.validateLocation(session.getSchoolLat(), session.getSchoolLng(), session.getSchoolRadius())
                 if (dist >= 0) currentDistance = dist
-                delay(5000) // Update setiap 5 detik
+                delay(1000) // Update setiap 1 detik agar terasa lebih real-time
             }
         }
 
         // Jalankan pengecekan libur saat layar dibuka
-        LaunchedEffect(Unit) { checkHolidays() }
+        LaunchedEffect(Unit) { checkHolidays(session) }
 
         // Refresh data saat target kelas diganti
         LaunchedEffect(targetKls) { refresh() }
@@ -851,39 +968,26 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // Banner Informasi jika hari ini Libur
-                holidayMessage?.let { msg ->
+                // Banner Informasi jika hari ini Libur (Versi Ringkas)
+                globalHolidayMessage?.let { msg ->
                     Surface(
-                        color = Color.Red.copy(alpha = 0.1f),
+                        color = Color.Red.copy(alpha = 0.08f),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.padding(top = 16.dp).fillMaxWidth(),
-                        border = BorderStroke(1.dp, Color.Red.copy(alpha = 0.5f))
+                        modifier = Modifier.padding(top = 12.dp).fillMaxWidth(),
+                        border = BorderStroke(1.dp, Color.Red.copy(alpha = 0.2f))
                     ) {
-                        Column(
-                            Modifier.padding(16.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center
+                        Row(
+                            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
                         ) {
-                            Icon(
-                                Icons.Default.EventBusy, 
-                                null, 
-                                tint = Color.Red, 
-                                modifier = Modifier.size(32.dp)
-                            )
-                            Spacer(Modifier.height(8.dp))
+                            Icon(Icons.Default.EventBusy, null, tint = Color.Red, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(8.dp))
                             Text(
-                                "ABSENSI DITUTUP", 
+                                "ABSENSI LIBUR: $msg", 
                                 color = Color.Red, 
-                                fontSize = 16.sp, 
-                                fontWeight = FontWeight.Black,
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                            )
-                            Text(
-                                msg, 
-                                color = Color.Red.copy(alpha = 0.8f), 
-                                fontSize = 13.sp, 
-                                fontWeight = FontWeight.Medium,
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                fontSize = 11.sp, 
+                                fontWeight = FontWeight.Bold
                             )
                         }
                     }
@@ -892,7 +996,7 @@ class MainActivity : ComponentActivity() {
                 // Tampilkan Menu Admin jika role adalah Admin
                 if (isAdmin) {
                     Spacer(Modifier.height(16.dp))
-                    AdminMod(session, holidayMessage != null, syncMatchPercent) { 
+                    AdminMod(session, globalHolidayMessage != null, syncMatchPercent) { 
                         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
                             isScan = true 
                         } else {
@@ -926,14 +1030,21 @@ class MainActivity : ComponentActivity() {
                                     
                                     scanLoading = true
                                     
-                                    // VALIDASI GPS SEBELUM SCAN
+                                    // VALIDASI GPS & ANTI-FAKE SEBELUM SCAN
                                     lifecycleScope.launch {
-                                        val (isNear, distance) = locationHelper.isWithinRadius(
+                                        val (isNear, distance, isFake) = locationHelper.validateLocation(
                                             session.getSchoolLat(), 
                                             session.getSchoolLng(), 
                                             session.getSchoolRadius()
                                         )
                                         
+                                        if (isFake) {
+                                            scanLoading = false
+                                            Toast.makeText(context, "Kecurangan Terdeteksi: Anda menggunakan Fake GPS!", Toast.LENGTH_LONG).show()
+                                            isScan = false
+                                            return@launch
+                                        }
+
                                         if (!isNear && distance >= 0) {
                                             scanLoading = false
                                             Toast.makeText(context, "Gagal: Anda berada di luar area sekolah (${distance.toInt()}m)", Toast.LENGTH_LONG).show()
@@ -951,12 +1062,16 @@ class MainActivity : ComponentActivity() {
                                         apiCall(session.getBackendUrl(), payload) { s, r ->
                                             scanLoading = false
                                             scanSuccess = s
-                                            val msg = r.optString("message", if (s) "Berhasil" else "Gagal")
-                                            scanMessage = msg
                                             
-                                            // Munculkan Toast jika scan gagal (misal: belum jam pulang)
-                                            if (!s) {
-                                                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                                            // Menentukan pesan berdasarkan response dari server
+                                            val serverMsg = r.optString("message", "")
+                                            val namaSiswa = r.optString("nama", "Siswa")
+                                            
+                                            scanMessage = when {
+                                                !s -> serverMsg // Jika gagal (misal: belum jam absen)
+                                                serverMsg.contains("Terlambat", true) -> "$namaSiswa\nHADIR TERLAMBAT"
+                                                serverMsg.contains("Lupa", true) -> "$namaSiswa\nHADIR (LUPA ABSEN MASUK)"
+                                                else -> "$namaSiswa\nHADIR TEPAT WAKTU"
                                             }
                                             
                                             // Auto-close scanner setelah feedback selesai
@@ -965,7 +1080,7 @@ class MainActivity : ComponentActivity() {
                                                 scanSuccess = null
                                                 scanMessage = ""
                                                 refresh()
-                                            }, 2000)
+                                            }, 2500)
                                         }
                                     }
                                 }
@@ -973,7 +1088,14 @@ class MainActivity : ComponentActivity() {
 
                             // Gambar garis bingkai kotak scan di atas kamera
                             Canvas(Modifier.fillMaxSize()) {
-                                val color = if (scanSuccess == true) Color.Green else if (scanSuccess == false) Color.Red else MojoYellow
+                                // Warna bingkai menyesuaikan hasil scan
+                                val color = when {
+                                    scanSuccess == null -> MojoYellow
+                                    scanSuccess == false -> Color.Red
+                                    scanMessage.contains("TERLAMBAT") -> Color(0xFFFB8C00) // Oranye
+                                    scanMessage.contains("LUPA") -> Color(0xFF7E57C2) // Ungu
+                                    else -> Color.Green
+                                }
                                 val sw = 4.dp.toPx(); val cl = 40.dp.toPx(); val sx = size.width * 0.7f; val sy = size.height * 0.7f
                                 val stX = (size.width - sx) / 2; val stY = (size.height - sy) / 2
                                 drawLine(color, Offset(stX, stY), Offset(stX + cl, stY), sw)
@@ -1000,11 +1122,23 @@ class MainActivity : ComponentActivity() {
                                             Spacer(Modifier.height(16.dp))
                                             Text("Memproses Absen...", color = Color.White, fontWeight = FontWeight.Bold)
                                         } else {
-                                            val icon = if (scanSuccess == true) Icons.Default.CheckCircle else Icons.Default.Error
-                                            val tint = if (scanSuccess == true) Color.Green else Color.Red
+                                            // Menyesuaikan ikon dan warna overlay
+                                            val (icon, tint) = when {
+                                                scanSuccess == false -> Icons.Default.Error to Color.Red
+                                                scanMessage.contains("TERLAMBAT") -> Icons.Default.History to Color(0xFFFB8C00)
+                                                scanMessage.contains("LUPA") -> Icons.Default.RunningWithErrors to Color(0xFF7E57C2)
+                                                else -> Icons.Default.CheckCircle to Color.Green
+                                            }
                                             Icon(icon, null, Modifier.size(80.dp), tint)
                                             Spacer(Modifier.height(16.dp))
-                                            Text(scanMessage, color = Color.White, fontWeight = FontWeight.Black, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.padding(horizontal = 24.dp))
+                                            Text(
+                                                scanMessage, 
+                                                color = Color.White, 
+                                                fontWeight = FontWeight.Black, 
+                                                textAlign = androidx.compose.ui.text.style.TextAlign.Center, 
+                                                modifier = Modifier.padding(horizontal = 24.dp),
+                                                lineHeight = 24.sp
+                                            )
                                         }
                                     }
                                 }
@@ -1031,7 +1165,7 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                         modifier = Modifier.fillMaxWidth().height(56.dp),
-                        enabled = holidayMessage == null,
+                        enabled = globalHolidayMessage == null,
                         shape = RoundedCornerShape(16.dp),
                         colors = ButtonDefaults.buttonColors(MojoYellow),
                         elevation = ButtonDefaults.buttonElevation(4.dp)
@@ -1122,7 +1256,8 @@ class MainActivity : ComponentActivity() {
                             // Gunakan animasi penyesuaian ukuran konten agar halus (percepat durasi)
                             Box(Modifier.animateContentSize(animationSpec = tween(200))) {
                                 val isNotAbsentYet = s.status == "-" || s.status == ""
-                                SiswaItem(s, !isSiswa && holidayMessage == null && isNotAbsentYet, loadingNisn == s.nisn, holidayMessage) { st, note ->
+                                // canEdit sekarang hanya mengecek role dan status absen, tidak mengecek hari libur
+                                SiswaItem(s, !isSiswa && isNotAbsentYet, loadingNisn == s.nisn, globalHolidayMessage) { st, note ->
                                     loadingNisn = s.nisn
                                     apiCall(session.getBackendUrl(), JSONObject().apply {
                                         put("action", "scan_absen")
@@ -1512,6 +1647,22 @@ class MainActivity : ComponentActivity() {
             confirmButton = {
                 Button(
                     onClick = {
+                        fun timeToInt(t: String): Int {
+                            val clean = t.replace(".", ":").trim()
+                            val parts = clean.split(":")
+                            if (parts.size < 2) return 0
+                            return (parts[0].toIntOrNull() ?: 0) * 60 + (parts[1].toIntOrNull() ?: 0)
+                        }
+
+                        if (!isLibur) {
+                            val vM1 = timeToInt(m1); val vM2 = timeToInt(m2)
+                            val vP1 = timeToInt(p1); val vP2 = timeToInt(p2)
+                            
+                            if (vM1 >= vM2) { Toast.makeText(ctx, "Jam Masuk Akhir harus lebih besar dari Mulai!", Toast.LENGTH_SHORT).show(); return@Button }
+                            if (vP1 >= vP2) { Toast.makeText(ctx, "Jam Pulang Akhir harus lebih besar dari Mulai!", Toast.LENGTH_SHORT).show(); return@Button }
+                            if (vM2 >= vP1) { Toast.makeText(ctx, "Jam Pulang harus setelah Jam Masuk!", Toast.LENGTH_SHORT).show(); return@Button }
+                        }
+
                         isSaving = true
                         val root = configData ?: JSONObject()
                         var dataObj: JSONObject? = root
@@ -1744,13 +1895,19 @@ class MainActivity : ComponentActivity() {
         var menu by remember { mutableStateOf(false) }
         val ctx = LocalContext.current
         
+        // Cek apakah siswa sudah memiliki status hadir (H, TL, atau LS)
+        val hasHadirStatus = s.status == "H" || s.status == "TL" || s.status == "LS" || s.status.contains("Hadir", true)
+        
+        // Input manual (Sakit, Izin, Alpa) hanya bisa jika belum ada status APAPUN (status == "-" atau "")
+        val canInputManual = canEdit && (s.status == "-" || s.status == "" || s.status == "null")
+
         val isLupaMasuk = s.keterangan.contains("Lupa Absen Masuk", true) || s.status == "LS"
         val isTerlambat = s.keterangan.contains("Terlambat", true) || s.status == "TL"
 
         val (statusLabel, statusColor, statusIcon) = when {
-            isLupaMasuk -> Triple("Lupa Absen Masuk", Color(0xFF7E57C2), Icons.Default.RunningWithErrors) // Ungu
-            isTerlambat -> Triple("Terlambat", Color(0xFFFB8C00), Icons.Default.History) // Jingga
-            s.status.contains("Hadir", true) || s.status == "H" -> Triple("Hadir", MojoGreen, Icons.Default.CheckCircle)
+            isLupaMasuk -> Triple("Hadir (Lupa Absen Masuk)", Color(0xFF7E57C2), Icons.Default.RunningWithErrors) // Ungu
+            isTerlambat -> Triple("Hadir Terlambat", Color(0xFFFB8C00), Icons.Default.History) // Oranye
+            s.status.contains("Hadir", true) || s.status == "H" -> Triple("Hadir Tepat Waktu", MojoGreen, Icons.Default.CheckCircle)
             s.status.contains("Sakit", true) || s.status == "S" -> Triple("Sakit", Color(0xFFFFD700), Icons.Default.MedicalServices) // Kuning Emas
             s.status.contains("Izin", true) || s.status == "I" -> Triple("Izin", Color(0xFF03A9F4), Icons.Default.Description) // Biru Langit
             s.status.contains("Alpa", true) || s.status == "A" -> Triple("Alpa", MojoRed, Icons.Default.Cancel)
@@ -1761,10 +1918,15 @@ class MainActivity : ComponentActivity() {
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable { 
-                    if (holidayMsg != null) {
-                        Toast.makeText(ctx, "Absensi ditutup: $holidayMsg", Toast.LENGTH_SHORT).show()
+                    if (canInputManual && !isLoading) {
+                        if (holidayMsg != null) {
+                            Toast.makeText(ctx, "Absensi ditutup: $holidayMsg", Toast.LENGTH_SHORT).show()
+                        } else {
+                            menu = true 
+                        }
+                    } else if (hasHadirStatus) {
+                        Toast.makeText(ctx, "Siswa sudah memiliki status Hadir", Toast.LENGTH_SHORT).show()
                     }
-                    else if (canEdit && !isLoading) menu = true 
                 },
             shape = RoundedCornerShape(12.dp), 
             colors = CardDefaults.cardColors(Color.White), 
@@ -1804,9 +1966,17 @@ class MainActivity : ComponentActivity() {
                         if (isLoading) {
                             CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = statusColor)
                         } else {
-                             TimeBadgeCompact(s.jamMasuk, Icons.AutoMirrored.Filled.Login, MojoBlue)
-                             Spacer(Modifier.width(6.dp))
-                             TimeBadgeCompact(s.jamPulang, Icons.AutoMirrored.Filled.Logout, MojoRed)
+                             // Jam hanya muncul jika bukan status manual (S, I, A) dan bukan Belum Absen
+                             val isManualStatus = s.status == "S" || s.status == "I" || s.status == "A"
+                             val isBelumAbsen = s.status == "-" || s.status == "" || s.status == "null"
+                             
+                             if (!isManualStatus && !isBelumAbsen) {
+                                 TimeBadgeCompact(s.jamMasuk, Icons.AutoMirrored.Filled.Login, MojoBlue)
+                                 Spacer(Modifier.width(6.dp))
+                                 TimeBadgeCompact(s.jamPulang, Icons.AutoMirrored.Filled.Logout, MojoRed)
+                             } else if (isManualStatus) {
+                                 Text("-", fontWeight = FontWeight.Bold, color = Color.Gray, fontSize = 12.sp)
+                             }
                         }
                     }
                 }
@@ -1817,9 +1987,8 @@ class MainActivity : ComponentActivity() {
             AlertDialog(onDismissRequest = { menu = false }, confirmButton = {}, title = { Text("Aksi Presensi Manual") },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        StatusOption("Hadir", Icons.Default.CheckCircle, MojoGreen) { onAct("H", "Manual App"); menu = false }
-                        StatusOption("Sakit", Icons.Default.MedicalServices, MojoBlue) { onAct("S", "Manual App"); menu = false }
-                        StatusOption("Izin", Icons.Default.Description, Color(0xFFFF9800)) { onAct("I", "Manual App"); menu = false }
+                        StatusOption("Sakit", Icons.Default.MedicalServices, Color(0xFFFFD700)) { onAct("S", "Manual App"); menu = false }
+                        StatusOption("Izin", Icons.Default.Description, Color(0xFF03A9F4)) { onAct("I", "Manual App"); menu = false }
                         StatusOption("Alpa", Icons.Default.Cancel, MojoRed) { onAct("A", "Manual App"); menu = false }
                     }
                 }
@@ -2070,21 +2239,21 @@ class MainActivity : ComponentActivity() {
         val context = LocalContext.current
         val scope = rememberCoroutineScope()
         
+        // Memaksa pengambilan nilai terbaru dari session saat dialog dibuka
         var lat by remember { mutableStateOf(session.getSchoolLat()) }
         var lng by remember { mutableStateOf(session.getSchoolLng()) }
         var radius by remember { mutableStateOf(session.getSchoolRadius().toFloat()) }
         var isSaving by remember { mutableStateOf(false) }
 
         val cameraPositionState = rememberCameraPositionState {
-            position = CameraPosition.fromLatLngZoom(LatLng(lat, lng), 15f)
+            position = CameraPosition.fromLatLngZoom(LatLng(lat, lng), 17f)
         }
 
-        // Update kamera jika koordinat berubah (misal dari tombol Ambil Lokasi)
-        LaunchedEffect(lat, lng) {
-            cameraPositionState.animate(
-                update = com.google.android.gms.maps.CameraUpdateFactory.newLatLngZoom(LatLng(lat, lng), 17f),
-                durationMs = 1000
-            )
+        // Sinkronisasi ulang koordinat jika data di session manager berubah
+        LaunchedEffect(session.getSchoolLat(), session.getSchoolLng()) {
+            lat = session.getSchoolLat()
+            lng = session.getSchoolLng()
+            cameraPositionState.position = CameraPosition.fromLatLngZoom(LatLng(lat, lng), 17f)
         }
 
         AlertDialog(
@@ -2131,7 +2300,7 @@ class MainActivity : ComponentActivity() {
                     else Text("Simpan Lokasi")
                 }
             },
-            dismissButton = { TextButton(onDismiss, enabled = !isSaving) { Text("Batal") } },
+            dismissButton = { TextButton(onClick = onDismiss, enabled = !isSaving) { Text("Batal") } },
             title = {
                 Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(Icons.Default.LocationOn, null, tint = Color(0xFF673AB7), modifier = Modifier.size(32.dp))
@@ -2153,8 +2322,8 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.fillMaxSize(),
                             cameraPositionState = cameraPositionState,
                             properties = MapProperties(
-                                isMyLocationEnabled = true,
-                                mapType = MapType.HYBRID // Menampilkan citra satelit dengan label (Gambar Asli)
+                                isMyLocationEnabled = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED,
+                                mapType = MapType.HYBRID // Menampilkan citra satelit dengan label (Tampilan Real/Asli)
                             ),
                             uiSettings = MapUiSettings(zoomControlsEnabled = false, myLocationButtonEnabled = false),
                             onMapClick = { point ->
@@ -2164,9 +2333,16 @@ class MainActivity : ComponentActivity() {
                         ) {
                             // Marker Titik Sekolah
                             val markerState = rememberMarkerState(position = LatLng(lat, lng))
+                            
+                            // Animasi kamera saat koordinat berubah (Otomatis geser saat klik icon lokasi presisi)
                             LaunchedEffect(lat, lng) {
+                                cameraPositionState.animate(
+                                    update = com.google.android.gms.maps.CameraUpdateFactory.newLatLngZoom(LatLng(lat, lng), 17f),
+                                    durationMs = 1000
+                                )
                                 markerState.position = LatLng(lat, lng)
                             }
+
                             Marker(
                                 state = markerState,
                                 title = "Titik Pusat Absensi"
@@ -2383,8 +2559,22 @@ class MainActivity : ComponentActivity() {
         // Cek izin alarm tepat di Android 12+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             if (!alarmManager.canScheduleExactAlarms()) {
-                val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
-                startActivity(intent)
+                // Gunakan flag di level class dan SharedPreferences agar tidak terbuka berkali-kali
+                if (isAlarmPermissionRequestInFlight) return
+                
+                val prefs = getSharedPreferences("app_settings", Context.MODE_PRIVATE)
+                val hasRequested = prefs.getBoolean("requested_alarm_permission", false)
+                
+                if (!hasRequested) {
+                    isAlarmPermissionRequestInFlight = true
+                    prefs.edit().putBoolean("requested_alarm_permission", true).commit() // Gunakan commit() agar langsung tersimpan
+                    
+                    runOnUiThread {
+                        Toast.makeText(this, "Mohon izinkan 'Alarm & Pengingat' untuk notifikasi absen", Toast.LENGTH_LONG).show()
+                        val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
+                        startActivity(intent)
+                    }
+                }
                 return
             }
         }

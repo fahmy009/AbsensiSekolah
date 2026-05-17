@@ -8,12 +8,41 @@ class SessionManager(context: Context) {
     fun saveAuthData(token: String, role: String, kelas: String, username: String, nisn: String = "") {
         prefs.edit().apply {
             putString("token", token)
+            putString("secure_token", token)
+            putString("secure_role", role)
+            putString("secure_kelas", kelas)
+            putString("secure_username", username)
+            putString("secure_nisn", nisn)
+
             putString("role", role)
             putString("kelas", kelas)
             putString("username", username)
             putString("nisn", nisn)
             apply()
         }
+    }
+
+    /**
+     * Memulihkan seluruh identitas user (Token, Role, Username, dll) dari cadangan aman.
+     */
+    fun restoreFullSessionFromSecure(): Boolean {
+        val token = prefs.getString("secure_token", null)
+        val role = prefs.getString("secure_role", "")
+        val kelas = prefs.getString("secure_kelas", "")
+        val user = prefs.getString("secure_username", "")
+        val nisn = prefs.getString("secure_nisn", "")
+
+        return if (token != null) {
+            prefs.edit().apply {
+                putString("token", token)
+                putString("role", role)
+                putString("kelas", kelas)
+                putString("username", user)
+                putString("nisn", nisn)
+                apply()
+            }
+            true
+        } else false
     }
 
     fun getToken(): String? = prefs.getString("token", null)
@@ -39,6 +68,12 @@ class SessionManager(context: Context) {
     fun getSchoolLng(): Double = prefs.getFloat("school_lng", 113.8447f).toDouble()
     fun getSchoolRadius(): Double = prefs.getFloat("school_radius", 100.0f).toDouble()
     fun getJadwal(): String? = prefs.getString("jadwal_harian", null)
+
+    fun setBiometricEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("biometric_enabled", enabled).apply()
+    }
+
+    fun isBiometricEnabled(): Boolean = prefs.getBoolean("biometric_enabled", false)
 
     fun getSchoolName(): String = prefs.getString("school_name", "PRESENSI SDN MOJOGEMI 02") ?: "PRESENSI SDN MOJOGEMI 02"
     fun getBackendUrl(): String = prefs.getString("backend_url", "https://script.google.com/macros/s/AKfycbz5BwUNBP04EgUD6mRPmEoIuioewQxv1BFHvwMhvwPrG1fPMwj7-iDPAMoGSu8ufalo/exec") ?: "https://script.google.com/macros/s/AKfycbz5BwUNBP04EgUD6mRPmEoIuioewQxv1BFHvwMhvwPrG1fPMwj7-iDPAMoGSu8ufalo/exec"

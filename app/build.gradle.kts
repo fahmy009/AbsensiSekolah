@@ -90,6 +90,12 @@ dependencies {
 
     // Play Services Location (GPS)
     implementation("com.google.android.gms:play-services-location:21.3.0")
+    
+    // Biometric
+    implementation("androidx.biometric:biometric-ktx:1.2.0-alpha05")
+    
+    // Lottie Animations
+    implementation("com.airbnb.android:lottie-compose:6.7.1")
 
     // Google Maps
     implementation("com.google.android.gms:play-services-maps:19.0.0")
