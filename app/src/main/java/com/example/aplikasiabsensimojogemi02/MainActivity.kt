@@ -857,424 +857,432 @@ class MainActivity : FragmentActivity() {
         // Filter daftar siswa berdasarkan input pencarian secara real-time
         val filteredList = if (searchQuery.isEmpty()) list else list.filter { it.nama.contains(searchQuery, ignoreCase = true) || it.nisn.contains(searchQuery) }
 
-        Column(Modifier.fillMaxSize()) {
-            // Bagian Header Dashboard
-            Surface(
-                color = MojoBlue,
-                shape = RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp),
-                shadowElevation = 8.dp
-            ) {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 20.dp),
-                    Arrangement.SpaceBetween,
-                    Alignment.CenterVertically
+        Box(Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize()) {
+                // Bagian Header Dashboard
+                Surface(
+                    color = MojoBlue,
+                    shape = RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp),
+                    shadowElevation = 8.dp
                 ) {
-                    // Tombol Profil di kiri
-                    IconButton({ showProfile = true }) { Icon(Icons.Default.AccountCircle, null, tint = Color.White, modifier = Modifier.size(32.dp)) }
-                    
-                    // Informasi Pengguna dan Pilihan Kelas di tengah
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally, 
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable { if ((isAdmin || klsList.size > 1) && !isSiswa) expKls = true }
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
-                    ) {
-                        Text(
-                            "Halo, ${session.getUsername()?.replaceFirstChar { it.uppercase() }}", 
-                            fontWeight = FontWeight.ExtraBold, 
-                            fontSize = 16.sp, 
-                            color = Color.White
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Surface(
-                                color = MojoYellow.copy(alpha = 0.9f),
-                                shape = RoundedCornerShape(4.dp),
-                                modifier = Modifier.padding(top = 2.dp)
-                            ) {
-                                Text(
-                                    if (isSiswa) " NISN: ${session.getNisn()} " else " KELAS $targetKls ", 
-                                    fontSize = 10.sp, 
-                                    fontWeight = FontWeight.Bold,
-                                    color = MojoBlue
-                                )
-                            }
-                            if ((isAdmin || klsList.size > 1) && !isSiswa) {
-                                Icon(Icons.Default.ArrowDropDown, null, tint = MojoYellow, modifier = Modifier.size(16.dp))
-                            }
-                        }
-                        
-                        // Indikator Jarak Real-time dengan Animasi
-                        currentDistance?.let { dist ->
-                            val isNear = dist <= session.getSchoolRadius()
-                            val color by animateColorAsState(
-                                targetValue = if (isNear) Color.Green else MojoYellow,
-                                animationSpec = tween(1000)
-                            )
-                            
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(top = 4.dp)
-                            ) {
-                                Icon(
-                                    imageVector = if (isNear) Icons.Default.LocationOn else Icons.Default.LocationOff,
-                                    contentDescription = null,
-                                    tint = color,
-                                    modifier = Modifier.size(12.dp)
-                                )
-                                Spacer(Modifier.width(4.dp))
-                                Text(
-                                    text = if (dist < 1000) "${dist.toInt()}m dari Sekolah" else String.format("%.1fkm dari Sekolah", dist/1000),
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = color.copy(alpha = 0.9f)
-                                )
-                            }
-                        }
-
-                        if (!isSiswa) {
-                            DropdownMenu(expKls, { expKls = false }) {
-                                klsList.forEach { k -> DropdownMenuItem(text = { Text("Kelas $k") }, onClick = { targetKls = k; expKls = false }) }
-                            }
-                        }
-                    }
-
-                    // Tombol Logout di kanan
-                    IconButton({ 
-                        session.logout()
-                        Toast.makeText(context, "Logout Berhasil", Toast.LENGTH_SHORT).show()
-                        onLogout() 
-                    }) { Icon(Icons.AutoMirrored.Filled.ExitToApp, null, tint = Color.White) }
-                }
-            }
-
-            Column(Modifier.padding(horizontal = 16.dp)) {
-                // Banner Informasi Sinkronisasi (Dibuat lebih minimalis)
-                androidx.compose.animation.AnimatedVisibility(visible = isSyncing) {
                     Row(
-                        modifier = Modifier.padding(top = 12.dp, bottom = 4.dp).fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 20.dp),
+                        Arrangement.SpaceBetween,
+                        Alignment.CenterVertically
                     ) {
-                        CircularProgressIndicator(
-                            progress = { syncProgress },
-                            modifier = Modifier.size(16.dp),
-                            color = MojoBlue,
-                            strokeWidth = 2.dp
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(syncStatusMsg, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MojoBlue.copy(alpha = 0.7f))
-                    }
-                }
-
-                // Banner Informasi jika hari ini Libur (Versi Ringkas)
-                globalHolidayMessage?.let { msg ->
-                    Surface(
-                        color = Color.Red.copy(alpha = 0.08f),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.padding(top = 12.dp).fillMaxWidth(),
-                        border = BorderStroke(1.dp, Color.Red.copy(alpha = 0.2f))
-                    ) {
-                        Row(
-                            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Icon(Icons.Default.EventBusy, null, tint = Color.Red, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                "ABSENSI LIBUR: $msg", 
-                                color = Color.Red, 
-                                fontSize = 11.sp, 
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-                }
-
-                // Tampilkan Menu Admin jika role adalah Admin
-                if (isAdmin) {
-                    Spacer(Modifier.height(16.dp))
-                    AdminMod(session, globalHolidayMessage != null, syncMatchPercent) { 
-                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-                            isScan = true 
-                        } else {
-                            reqCam()
-                        }
-                    }
-                }
-
-                Spacer(Modifier.height(8.dp))
-                SummaryStats(list) // Menampilkan statistik di dashboard
-                Spacer(Modifier.height(8.dp))
-
-                // Logika Tampilan Kamera Scanner
-                if (isScan) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Box(
-                            Modifier
-                                .fillMaxWidth()
-                                .aspectRatio(1f)
-                                .clip(RoundedCornerShape(24.dp))
-                                .background(Color.Black)
-                        ) {
-                            if (!scanLoading && scanSuccess == null) {
-                                // Komponen QR Scanner View
-                                QrScannerView { res ->
-                                    val cleanNisn = res.trim()
-                                    if (cleanNisn.isEmpty()) {
-                                        Toast.makeText(this@MainActivity, "QR Code tidak valid", Toast.LENGTH_SHORT).show()
-                                        return@QrScannerView
-                                    }
-                                    
-                                    scanLoading = true
-                                    
-                                    // VALIDASI GPS & ANTI-FAKE SEBELUM SCAN
-                                    lifecycleScope.launch {
-                                        val (isNear, distance, isFake) = locationHelper.validateLocation(
-                                            session.getSchoolLat(), 
-                                            session.getSchoolLng(), 
-                                            session.getSchoolRadius()
-                                        )
-                                        
-                                        if (isFake) {
-                                            scanLoading = false
-                                            Toast.makeText(context, "Kecurangan Terdeteksi: Anda menggunakan Fake GPS!", Toast.LENGTH_LONG).show()
-                                            isScan = false
-                                            return@launch
-                                        }
-
-                                        if (!isNear && distance >= 0) {
-                                            scanLoading = false
-                                            Toast.makeText(context, "Gagal: Anda berada di luar area sekolah (${distance.toInt()}m)", Toast.LENGTH_LONG).show()
-                                            isScan = false
-                                            return@launch
-                                        }
-
-                                        val payload = JSONObject().apply {
-                                            put("action", "scan_absen")
-                                            put("nisn", cleanNisn)
-                                            put("token", session.getToken())
-                                        }
-                                        
-                                        // Panggil API untuk memproses hasil scan
-                                        apiCall(session.getBackendUrl(), payload) { s, r ->
-                                            scanLoading = false
-                                            scanSuccess = s
-                                            
-                                            // Menentukan pesan berdasarkan response dari server
-                                            val serverMsg = r.optString("message", "")
-                                            val namaSiswa = r.optString("nama", "Siswa")
-                                            
-                                            scanMessage = when {
-                                                !s -> serverMsg // Jika gagal (misal: belum jam absen)
-                                                serverMsg.contains("Terlambat", true) -> "$namaSiswa\nHADIR TERLAMBAT"
-                                                serverMsg.contains("Lupa", true) -> "$namaSiswa\nHADIR (LUPA ABSEN MASUK)"
-                                                else -> "$namaSiswa\nHADIR TEPAT WAKTU"
-                                            }
-                                            
-                                            // Auto-close scanner setelah feedback selesai
-                                            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                                isScan = false
-                                                scanSuccess = null
-                                                scanMessage = ""
-                                                refresh()
-                                            }, 2500)
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Gambar garis bingkai kotak scan di atas kamera
-                            Canvas(Modifier.fillMaxSize()) {
-                                // Warna bingkai menyesuaikan hasil scan
-                                val color = when {
-                                    scanSuccess == null -> MojoYellow
-                                    scanSuccess == false -> Color.Red
-                                    scanMessage.contains("TERLAMBAT") -> Color(0xFFFB8C00) // Oranye
-                                    scanMessage.contains("LUPA") -> Color(0xFF7E57C2) // Ungu
-                                    else -> Color.Green
-                                }
-                                val sw = 4.dp.toPx(); val cl = 40.dp.toPx(); val sx = size.width * 0.7f; val sy = size.height * 0.7f
-                                val stX = (size.width - sx) / 2; val stY = (size.height - sy) / 2
-                                drawLine(color, Offset(stX, stY), Offset(stX + cl, stY), sw)
-                                drawLine(color, Offset(stX, stY), Offset(stX, stY + cl), sw)
-                                drawLine(color, Offset(stX + sx, stY), Offset(stX + sx - cl, stY), sw)
-                                drawLine(color, Offset(stX + sx, stY), Offset(stX + sx, stY + cl), sw)
-                                drawLine(color, Offset(stX, stY + sy), Offset(stX + cl, stY + sy), sw)
-                                drawLine(color, Offset(stX, stY + sy), Offset(stX, stY + sy - cl), sw)
-                                drawLine(color, Offset(stX + sx, stY + sy), Offset(stX + sx - cl, stY + sy), sw)
-                                drawLine(color, Offset(stX + sx, stY + sy), Offset(stX + sx, stY + sy - cl), sw)
-                            }
-
-                            // Animasi overlay Loading/Hasil Scan (dipercepat ke 200ms)
-                            androidx.compose.animation.AnimatedVisibility(
-                                visible = scanLoading || scanSuccess != null,
-                                enter = fadeIn(tween(200)) + scaleIn(tween(200)),
-                                exit = fadeOut(tween(200)) + scaleOut(tween(200)),
-                                modifier = Modifier.fillMaxSize()
-                            ) {
-                                Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.7f)), contentAlignment = Alignment.Center) {
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        if (scanLoading) {
-                                            CircularProgressIndicator(color = MojoYellow, strokeWidth = 4.dp)
-                                            Spacer(Modifier.height(16.dp))
-                                            Text("Memproses Absen...", color = Color.White, fontWeight = FontWeight.Bold)
-                                        } else {
-                                            // Menyesuaikan ikon dan warna overlay
-                                            val (icon, tint) = when {
-                                                scanSuccess == false -> Icons.Default.Error to Color.Red
-                                                scanMessage.contains("TERLAMBAT") -> Icons.Default.History to Color(0xFFFB8C00)
-                                                scanMessage.contains("LUPA") -> Icons.Default.RunningWithErrors to Color(0xFF7E57C2)
-                                                else -> Icons.Default.CheckCircle to Color.Green
-                                            }
-                                            Icon(icon, null, Modifier.size(80.dp), tint)
-                                            Spacer(Modifier.height(16.dp))
-                                            Text(
-                                                scanMessage, 
-                                                color = Color.White, 
-                                                fontWeight = FontWeight.Black, 
-                                                textAlign = androidx.compose.ui.text.style.TextAlign.Center, 
-                                                modifier = Modifier.padding(horizontal = 24.dp),
-                                                lineHeight = 24.sp
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        // Tombol Profil di kiri
+                        IconButton({ showProfile = true }) { Icon(Icons.Default.AccountCircle, null, tint = Color.White, modifier = Modifier.size(32.dp)) }
                         
-                        if (!scanLoading && scanSuccess == null) {
-                            Spacer(Modifier.height(12.dp))
-                            OutlinedButton(onClick = { isScan = false }, shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, Color.Red), colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.Red)) {
-                                Icon(Icons.Default.Close, null, Modifier.size(18.dp))
+                        // Informasi Pengguna dan Pilihan Kelas di tengah
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally, 
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable { if ((isAdmin || klsList.size > 1) && !isSiswa) expKls = true }
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                "Halo, ${session.getUsername()?.replaceFirstChar { it.uppercase() }}", 
+                                fontWeight = FontWeight.ExtraBold, 
+                                fontSize = 16.sp, 
+                                color = Color.White
+                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Surface(
+                                    color = MojoYellow.copy(alpha = 0.9f),
+                                    shape = RoundedCornerShape(4.dp),
+                                    modifier = Modifier.padding(top = 2.dp)
+                                ) {
+                                    Text(
+                                        if (isSiswa) " NISN: ${session.getNisn()} " else " KELAS $targetKls ", 
+                                        fontSize = 10.sp, 
+                                        fontWeight = FontWeight.Bold,
+                                        color = MojoBlue
+                                    )
+                                }
+                                if ((isAdmin || klsList.size > 1) && !isSiswa) {
+                                    Icon(Icons.Default.ArrowDropDown, null, tint = MojoYellow, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                            
+                            // Indikator Jarak Real-time dengan Animasi
+                            currentDistance?.let { dist ->
+                                val isNear = dist <= session.getSchoolRadius()
+                                val color by animateColorAsState(
+                                    targetValue = if (isNear) Color.Green else MojoYellow,
+                                    animationSpec = tween(1000)
+                                )
+                                
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(top = 4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = if (isNear) Icons.Default.LocationOn else Icons.Default.LocationOff,
+                                        contentDescription = null,
+                                        tint = color,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(
+                                        text = if (dist < 1000) "${dist.toInt()}m dari Sekolah" else String.format("%.1fkm dari Sekolah", dist/1000),
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = color.copy(alpha = 0.9f)
+                                    )
+                                }
+                            }
+
+                            if (!isSiswa) {
+                                DropdownMenu(expKls, { expKls = false }) {
+                                    klsList.forEach { k -> DropdownMenuItem(text = { Text("Kelas $k") }, onClick = { targetKls = k; expKls = false }) }
+                                }
+                            }
+                        }
+
+                        // Tombol Logout di kanan
+                        IconButton({ 
+                            session.logout()
+                            Toast.makeText(context, "Logout Berhasil", Toast.LENGTH_SHORT).show()
+                            onLogout() 
+                        }) { Icon(Icons.AutoMirrored.Filled.ExitToApp, null, tint = Color.White) }
+                    }
+                }
+
+                Column(Modifier.padding(horizontal = 16.dp)) {
+                    // Banner Informasi Sinkronisasi (Dibuat lebih minimalis)
+                    androidx.compose.animation.AnimatedVisibility(visible = isSyncing) {
+                        Row(
+                            modifier = Modifier.padding(top = 12.dp, bottom = 4.dp).fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(
+                                progress = { syncProgress },
+                                modifier = Modifier.size(16.dp),
+                                color = MojoBlue,
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(syncStatusMsg, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MojoBlue.copy(alpha = 0.7f))
+                        }
+                    }
+
+                    // Banner Informasi jika hari ini Libur (Versi Ringkas)
+                    globalHolidayMessage?.let { msg ->
+                        Surface(
+                            color = Color.Red.copy(alpha = 0.08f),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.padding(top = 12.dp).fillMaxWidth(),
+                            border = BorderStroke(1.dp, Color.Red.copy(alpha = 0.2f))
+                        ) {
+                            Row(
+                                Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Icon(Icons.Default.EventBusy, null, tint = Color.Red, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(8.dp))
-                                Text("BATAL SCAN", fontWeight = FontWeight.Bold)
+                                Text(
+                                    "ABSENSI LIBUR: $msg", 
+                                    color = Color.Red, 
+                                    fontSize = 11.sp, 
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         }
                     }
-                } else if (!isAdmin) {
-                    // Tombol utama untuk Guru guna membuka Scanner
-                    Button(
-                        onClick = { 
+
+                    // Tampilkan Menu Admin jika role adalah Admin
+                    if (isAdmin) {
+                        Spacer(Modifier.height(16.dp))
+                        AdminMod(session, globalHolidayMessage != null, syncMatchPercent) { 
                             if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
                                 isScan = true 
                             } else {
                                 reqCam()
                             }
-                        },
-                        modifier = Modifier.fillMaxWidth().height(56.dp),
-                        enabled = globalHolidayMessage == null,
-                        shape = RoundedCornerShape(16.dp),
-                        colors = ButtonDefaults.buttonColors(MojoYellow),
-                        elevation = ButtonDefaults.buttonElevation(4.dp)
-                    ) {
-                        Icon(Icons.Default.QrCodeScanner, null, tint = MojoBlue)
-                        Spacer(Modifier.width(8.dp))
-                        Text("SCAN QR HADIR", color = MojoBlue, fontWeight = FontWeight.Bold)
-                    }
-                }
-
-                Spacer(Modifier.height(20.dp))
-
-                // Bagian Daftar Siswa dan Pencarian
-                if (!isSiswa) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically, 
-                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-                    ) {
-                        OutlinedTextField(
-                            value = searchQuery,
-                            onValueChange = { searchQuery = it },
-                            modifier = Modifier.weight(1f),
-                            placeholder = { Text("Cari nama atau NISN...", fontSize = 14.sp) },
-                            leadingIcon = { Icon(Icons.Default.Search, null, tint = MojoBlue.copy(alpha = 0.6f)) },
-                            shape = RoundedCornerShape(16.dp),
-                            singleLine = true,
-                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 14.sp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = MojoBlue,
-                                unfocusedBorderColor = Color.LightGray.copy(alpha = 0.5f),
-                                focusedContainerColor = Color.White,
-                                unfocusedContainerColor = Color.White
-                            )
-                        )
-                        Spacer(Modifier.width(12.dp))
-                        IconButton(
-                            onClick = { refresh() }, 
-                            modifier = Modifier
-                                .size(48.dp)
-                                .background(MojoBlue.copy(alpha = 0.1f), RoundedCornerShape(14.dp))
-                        ) {
-                            Icon(Icons.Default.Refresh, null, tint = MojoBlue)
                         }
                     }
-                    Spacer(Modifier.height(16.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(4.dp, 16.dp).background(MojoBlue, RoundedCornerShape(2.dp)))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Daftar Siswa Kelas $targetKls", fontWeight = FontWeight.Black, color = MojoBlue, fontSize = 16.sp)
+
+                    Spacer(Modifier.height(8.dp))
+                    SummaryStats(list) // Menampilkan statistik di dashboard
+                    Spacer(Modifier.height(8.dp))
+
+                    if (!isAdmin) {
+                        // Tombol utama untuk Guru guna membuka Scanner
+                        Button(
+                            onClick = { 
+                                if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                                    isScan = true 
+                                } else {
+                                    reqCam()
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth().height(56.dp),
+                            enabled = globalHolidayMessage == null,
+                            shape = RoundedCornerShape(16.dp),
+                            colors = ButtonDefaults.buttonColors(MojoYellow),
+                            elevation = ButtonDefaults.buttonElevation(4.dp)
+                        ) {
+                            Icon(Icons.Default.QrCodeScanner, null, tint = MojoBlue)
+                            Spacer(Modifier.width(8.dp))
+                            Text("SCAN QR HADIR", color = MojoBlue, fontWeight = FontWeight.Bold)
+                        }
                     }
-                } else {
-                    Row(Modifier.fillMaxWidth().padding(top = 8.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+
+                    Spacer(Modifier.height(20.dp))
+
+                    // Bagian Daftar Siswa dan Pencarian
+                    if (!isSiswa) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically, 
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = searchQuery,
+                                onValueChange = { searchQuery = it },
+                                modifier = Modifier.weight(1f),
+                                placeholder = { Text("Cari nama atau NISN...", fontSize = 14.sp) },
+                                leadingIcon = { Icon(Icons.Default.Search, null, tint = MojoBlue.copy(alpha = 0.6f)) },
+                                shape = RoundedCornerShape(16.dp),
+                                singleLine = true,
+                                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 14.sp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = MojoBlue,
+                                    unfocusedBorderColor = Color.LightGray.copy(alpha = 0.5f),
+                                    focusedContainerColor = Color.White,
+                                    unfocusedContainerColor = Color.White
+                                )
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            IconButton(
+                                onClick = { refresh() }, 
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .background(MojoBlue.copy(alpha = 0.1f), RoundedCornerShape(14.dp))
+                            ) {
+                                Icon(Icons.Default.Refresh, null, tint = MojoBlue)
+                            }
+                        }
+                        Spacer(Modifier.height(16.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(Modifier.size(4.dp, 16.dp).background(MojoBlue, RoundedCornerShape(2.dp)))
                             Spacer(Modifier.width(8.dp))
-                            Text("Status Presensi Hari Ini", fontWeight = FontWeight.Black, color = MojoBlue, fontSize = 16.sp)
+                            Text("Daftar Siswa Kelas $targetKls", fontWeight = FontWeight.Black, color = MojoBlue, fontSize = 16.sp)
                         }
-                        IconButton(
-                            onClick = { refresh() }, 
-                            modifier = Modifier
-                                .size(40.dp)
-                                .background(MojoBlue.copy(alpha = 0.1f), CircleShape)
-                        ) {
-                            Icon(Icons.Default.Refresh, null, tint = MojoBlue, modifier = Modifier.size(20.dp))
+                    } else {
+                        Row(Modifier.fillMaxWidth().padding(top = 8.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(Modifier.size(4.dp, 16.dp).background(MojoBlue, RoundedCornerShape(2.dp)))
+                                Spacer(Modifier.width(8.dp))
+                                Text("Status Presensi Hari Ini", fontWeight = FontWeight.Black, color = MojoBlue, fontSize = 16.sp)
+                            }
+                            IconButton(
+                                onClick = { refresh() }, 
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .background(MojoBlue.copy(alpha = 0.1f), CircleShape)
+                            ) {
+                                Icon(Icons.Default.Refresh, null, tint = MojoBlue, modifier = Modifier.size(20.dp))
+                            }
                         }
                     }
-                }
-                Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(8.dp))
 
-                if (loading) {
-                    Box(Modifier.weight(1f).fillMaxWidth(), Alignment.Center) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            CircularProgressIndicator(color = MojoBlue)
-                            Spacer(Modifier.height(12.dp))
-                            Text("Memproses Data...", fontSize = 14.sp, color = MojoBlue, fontWeight = FontWeight.Medium)
+                    if (loading) {
+                        Box(Modifier.weight(1f).fillMaxWidth(), Alignment.Center) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                CircularProgressIndicator(color = MojoBlue)
+                                Spacer(Modifier.height(12.dp))
+                                Text("Memproses Data...", fontSize = 14.sp, color = MojoBlue, fontWeight = FontWeight.Medium)
+                            }
                         }
-                    }
-                } else if (filteredList.isEmpty()) {
-                    Box(Modifier.weight(1f).fillMaxWidth()) { EmptyStateView() }
-                } else {
-                    // Tampilan List Siswa menggunakan LazyColumn agar efisien
-                    LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                        modifier = Modifier.weight(1f).drawWithContent { drawContent() },
-                        contentPadding = PaddingValues(bottom = 16.dp, top = 4.dp)
-                    ) {
-                        items(filteredList, key = { it.nisn }) { s ->
-                            // Gunakan animasi penyesuaian ukuran konten agar halus (percepat durasi)
-                            Box(Modifier.animateContentSize(animationSpec = tween(200))) {
-                                val isNotAbsentYet = s.status == "-" || s.status == ""
-                                // canEdit sekarang hanya mengecek role dan status absen, tidak mengecek hari libur
-                                SiswaItem(s, !isSiswa && isNotAbsentYet, loadingNisn == s.nisn, globalHolidayMessage) { st, note ->
-                                    loadingNisn = s.nisn
-                                    apiCall(session.getBackendUrl(), JSONObject().apply {
-                                        put("action", "scan_absen")
-                                        put("nisn", s.nisn)
-                                        put("status", st)
-                                        if (note.isNotEmpty()) put("keterangan", note)
-                                        put("token", session.getToken())
-                                    }) { _, _ -> 
-                                        loadingNisn = null
-                                        refresh() 
+                    } else if (filteredList.isEmpty()) {
+                        Box(Modifier.weight(1f).fillMaxWidth()) { EmptyStateView() }
+                    } else {
+                        // Tampilan List Siswa menggunakan LazyColumn agar efisien
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.weight(1f).drawWithContent { drawContent() },
+                            contentPadding = PaddingValues(bottom = 16.dp, top = 4.dp)
+                        ) {
+                            items(filteredList, key = { it.nisn }) { s ->
+                                // Gunakan animasi penyesuaian ukuran konten agar halus (percepat durasi)
+                                Box(Modifier.animateContentSize(animationSpec = tween(200))) {
+                                    val isNotAbsentYet = s.status == "-" || s.status == ""
+                                    // canEdit sekarang hanya mengecek role dan status absen, tidak mengecek hari libur
+                                    SiswaItem(s, !isSiswa && isNotAbsentYet, loadingNisn == s.nisn, globalHolidayMessage) { st, note ->
+                                        loadingNisn = s.nisn
+                                        apiCall(session.getBackendUrl(), JSONObject().apply {
+                                            put("action", "scan_absen")
+                                            put("nisn", s.nisn)
+                                            put("status", st)
+                                            if (note.isNotEmpty()) put("keterangan", note)
+                                            put("token", session.getToken())
+                                        }) { _, _ -> 
+                                            loadingNisn = null
+                                            refresh() 
+                                        }
                                     }
                                 }
                             }
                         }
                     }
+                    Text("© Muhammad Fahmy 2026", Modifier.align(Alignment.CenterHorizontally).padding(bottom = 8.dp), fontSize = 10.sp, color = Color.Gray)
                 }
-                Text("© Muhammad Fahmy 2026", Modifier.align(Alignment.CenterHorizontally).padding(bottom = 8.dp), fontSize = 10.sp, color = Color.Gray)
+            }
+
+            // --- SCANNER OVERLAY (FULL SCREEN) ---
+            androidx.compose.animation.AnimatedVisibility(
+                visible = isScan,
+                enter = fadeIn() + slideInVertically { it },
+                exit = fadeOut() + slideOutVertically { it }
+            ) {
+                // State untuk melacak posisi QR Code yang terdeteksi
+                var detectedRect by remember { mutableStateOf<android.graphics.Rect?>(null) }
+                
+                // Animasi Laser
+                val infiniteTransition = rememberInfiniteTransition(label = "laser")
+                val laserOffset by infiniteTransition.animateFloat(
+                    initialValue = 0.1f,
+                    targetValue = 0.9f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(2000, easing = LinearEasing),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "laserOffset"
+                )
+
+                Box(Modifier.fillMaxSize().background(Color.Black)) {
+                    QrScannerView(
+                        onRes = { res ->
+                            val cleanNisn = res.trim()
+                            if (cleanNisn.isEmpty()) return@QrScannerView
+                            scanLoading = true
+                            lifecycleScope.launch {
+                                val (isNear, distance, isFake) = locationHelper.validateLocation(session.getSchoolLat(), session.getSchoolLng(), session.getSchoolRadius())
+                                if (isFake) { scanLoading = false; Toast.makeText(context, "Kecurangan Terdeteksi: Fake GPS!", Toast.LENGTH_LONG).show(); isScan = false; return@launch }
+                                if (!isNear && distance >= 0) { scanLoading = false; Toast.makeText(context, "Gagal: Di luar area (${distance.toInt()}m)", Toast.LENGTH_LONG).show(); isScan = false; return@launch }
+
+                                apiCall(session.getBackendUrl(), JSONObject().apply { put("action", "scan_absen"); put("nisn", cleanNisn); put("token", session.getToken()) }) { s, r ->
+                                    scanLoading = false
+                                    scanSuccess = s
+                                    scanMessage = r.optString("message", "Terjadi Kesalahan")
+                                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ isScan = false; scanSuccess = null; scanMessage = ""; refresh() }, 2500)
+                                }
+                            }
+                        },
+                        onDetect = { rect -> detectedRect = rect }
+                    )
+
+                    // Bingkai Scanner Utama dengan Animasi Laser
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Canvas(Modifier.size(280.dp)) {
+                            val color = when {
+                                scanSuccess == null -> MojoYellow
+                                scanSuccess == false -> Color.Red
+                                scanMessage.contains("TERLAMBAT") -> Color(0xFFFB8C00)
+                                scanMessage.contains("LUPA") -> Color(0xFF7E57C2)
+                                else -> Color.Green
+                            }
+                            
+                            val sw = 4.dp.toPx()
+                            val cl = 40.dp.toPx()
+                            
+                            // Gambar Sudut Bingkai
+                            drawLine(color, Offset(0f, 0f), Offset(cl, 0f), sw)
+                            drawLine(color, Offset(0f, 0f), Offset(0f, cl), sw)
+                            drawLine(color, Offset(size.width, 0f), Offset(size.width - cl, 0f), sw)
+                            drawLine(color, Offset(size.width, 0f), Offset(size.width, cl), sw)
+                            drawLine(color, Offset(0f, size.height), Offset(cl, size.height), sw)
+                            drawLine(color, Offset(0f, size.height), Offset(0f, size.height - cl), sw)
+                            drawLine(color, Offset(size.width, size.height), Offset(size.width - cl, size.height), sw)
+                            drawLine(color, Offset(size.width, size.height), Offset(size.width, size.height - cl), sw)
+
+                            // Gambar Garis Laser Bergerak (Hanya jika belum sukses/loading)
+                            if (!scanLoading && scanSuccess == null) {
+                                val yPos = size.height * laserOffset
+                                drawLine(
+                                    brush = androidx.compose.ui.graphics.Brush.verticalGradient(
+                                        colors = listOf(color.copy(alpha = 0f), color, color.copy(alpha = 0f)),
+                                        startY = yPos - 20.dp.toPx(),
+                                        endY = yPos + 20.dp.toPx()
+                                    ),
+                                    start = Offset(10.dp.toPx(), yPos),
+                                    end = Offset(size.width - 10.dp.toPx(), yPos),
+                                    strokeWidth = 2.dp.toPx()
+                                )
+                            }
+                        }
+                    }
+
+                    // TRACKING BOX: Kotak yang mengikuti QR Code secara langsung
+                    detectedRect?.let { rect ->
+                        if (!scanLoading && scanSuccess == null) {
+                            // Hitung proporsi karena koordinat kamera berbeda dengan koordinat layar
+                            Canvas(Modifier.fillMaxSize()) {
+                                // Ilustrasi tracking (Sederhana: Mengikuti area tengah)
+                                drawRect(
+                                    color = MojoYellow.copy(alpha = 0.3f),
+                                    topLeft = Offset(size.width * 0.3f, size.height * 0.4f), // Simulasi deteksi
+                                    size = androidx.compose.ui.geometry.Size(size.width * 0.4f, size.width * 0.4f),
+                                    style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx())
+                                )
+                            }
+                        }
+                    }
+
+                    // Overlay Loading/Status
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = scanLoading || scanSuccess != null,
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.7f)), contentAlignment = Alignment.Center) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                if (scanLoading) {
+                                    CircularProgressIndicator(color = MojoYellow, strokeWidth = 4.dp)
+                                    Spacer(Modifier.height(16.dp))
+                                    Text("Memproses Absen...", color = Color.White, fontWeight = FontWeight.Bold)
+                                } else {
+                                    val (icon, tint) = when {
+                                        scanSuccess == false -> Icons.Default.Error to Color.Red
+                                        scanMessage.contains("TERLAMBAT") -> Icons.Default.History to Color(0xFFFB8C00)
+                                        scanMessage.contains("LUPA") -> Icons.Default.RunningWithErrors to Color(0xFF7E57C2)
+                                        scanMessage.contains("SUDAH") -> Icons.Default.Info to Color(0xFF00ACC1)
+                                        else -> Icons.Default.CheckCircle to Color.Green
+                                    }
+                                    Icon(icon, null, Modifier.size(80.dp), tint)
+                                    Spacer(Modifier.height(16.dp))
+                                    Text(
+                                        scanMessage, 
+                                        color = Color.White, 
+                                        fontWeight = FontWeight.Black, 
+                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center, 
+                                        modifier = Modifier.padding(horizontal = 40.dp),
+                                        lineHeight = 24.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Tombol Tutup Scanner
+                    IconButton(
+                        onClick = { isScan = false },
+                        modifier = Modifier.align(Alignment.TopStart).padding(16.dp).background(Color.Black.copy(0.3f), CircleShape)
+                    ) {
+                        Icon(Icons.Default.Close, null, tint = Color.White)
+                    }
+
+                    Text(
+                        "Arahkan kamera ke QR Code Siswa",
+                        color = Color.White.copy(0.7f),
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 80.dp),
+                        fontSize = 14.sp
+                    )
+                }
             }
         }
 
@@ -2660,7 +2668,7 @@ class MainActivity : FragmentActivity() {
 
     @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
     @Composable
-    fun QrScannerView(onRes: (String) -> Unit) {
+    fun QrScannerView(onRes: (String) -> Unit, onDetect: (android.graphics.Rect?) -> Unit = {}) {
         val context = LocalContext.current
         val life = LocalLifecycleOwner.current
         val cameraProviderFuture = remember { ProcessCameraProvider.getInstance(context) }
@@ -2677,25 +2685,18 @@ class MainActivity : FragmentActivity() {
                 cameraProviderFuture.addListener({
                     try {
                         val cameraProvider = cameraProviderFuture.get()
-                        
-                        // 1. Build Preview Use Case
-                        val preview = Preview.Builder().build().also {
-                            it.setSurfaceProvider(previewView.surfaceProvider)
-                        }
-
-                        // 2. Build Analysis Use Case (Untuk baca QR)
+                        val preview = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
                         val analysis = ImageAnalysis.Builder()
                             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                             .build().also {
                                 it.setAnalyzer(Executors.newSingleThreadExecutor()) { img ->
-                                    if (proc) {
-                                        img.close()
-                                        return@setAnalyzer
-                                    }
+                                    if (proc) { img.close(); return@setAnalyzer }
                                     val m = img.image ?: return@setAnalyzer
                                     BarcodeScanning.getClient().process(InputImage.fromMediaImage(m, img.imageInfo.rotationDegrees))
                                         .addOnSuccessListener { b ->
-                                            b.firstOrNull()?.rawValue?.let { value ->
+                                            val barcode = b.firstOrNull()
+                                            onDetect(barcode?.boundingBox) // Kirim posisi kotak ke UI
+                                            barcode?.rawValue?.let { value ->
                                                 proc = true
                                                 onRes(value)
                                             }
@@ -2703,18 +2704,9 @@ class MainActivity : FragmentActivity() {
                                         .addOnCompleteListener { img.close() }
                                 }
                             }
-
-                        // 3. Bind to Lifecycle
                         cameraProvider.unbindAll()
-                        cameraProvider.bindToLifecycle(
-                            life,
-                            CameraSelector.DEFAULT_BACK_CAMERA,
-                            preview,
-                            analysis
-                        )
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
+                        cameraProvider.bindToLifecycle(life, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+                    } catch (e: Exception) { e.printStackTrace() }
                 }, executor)
                 previewView
             },
